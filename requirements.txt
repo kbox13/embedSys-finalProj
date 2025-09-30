@@ -1,0 +1,43 @@
+# Core dependencies for BeatNet (editable install)
+-e ./BeatNet
+
+# Audio processing dependencies (BeatNet handles specific versions)
+librosa>=0.8.0
+# madmom>=0.16.1  # Removed as requested - not needed for BeatNet
+pyaudio>=0.2.11
+
+# Deep learning framework
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Scientific computing
+numpy>=1.21.0
+scipy>=1.7.0
+numba>=0.60.0  # Updated for Python 3.13 compatibility
+cython>=0.29.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Development dependencies
+pytest>=7.0.0
+black>=22.0.0
+flake8>=5.0.0
+jupyter>=1.0.0
+
+# Additional useful packages
+tqdm>=4.64.0
+pandas>=1.4.0
+mido>=1.2.6  # Required by BeatNet for MIDI file handling
+
+# Note: BeatNet's setup.py handles its own specific dependency versions
+# The editable install (-e ./BeatNet) will automatically install:
+# - librosa>=0.8.0
+# - numba>=0.60.0 (updated for Python 3.13)
+# - torch
+# - matplotlib
+# - pytest
+# - cython
+# - scipy
+# - numpy
