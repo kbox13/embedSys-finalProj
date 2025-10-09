@@ -1,5 +1,6 @@
 # Core dependencies for BeatNet (editable install)
 -e ./BeatNet
+-e ./madmom
 
 # Audio processing dependencies (BeatNet handles specific versions)
 librosa>=0.8.0
@@ -41,3 +42,5 @@ mido>=1.2.6  # Required by BeatNet for MIDI file handling
 # - cython
 # - scipy
 # - numpy
+
+
