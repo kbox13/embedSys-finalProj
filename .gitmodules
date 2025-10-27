@@ -1,3 +1,6 @@
 [submodule "BeatNet"]
 	path = BeatNet
 	url = git@github.com:kevinbox/BeatNet.git
+[submodule "madmom"]
+	path = madmom
+	url = https://github.com/BigRedDoge/madmom.git
