@@ -1,0 +1,3 @@
+[submodule "BeatNet"]
+	path = BeatNet
+	url = git@github.com:kevinbox/BeatNet.git
