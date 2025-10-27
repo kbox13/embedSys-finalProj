@@ -32,6 +32,10 @@ tqdm>=4.64.0
 pandas>=1.4.0
 mido>=1.2.6  # Required by BeatNet for MIDI file handling
 
+# Other dependencies
+vispy
+PyQt6  # GUI backend for Vispy
+
 # Note: BeatNet's setup.py handles its own specific dependency versions
 # The editable install (-e ./BeatNet) will automatically install:
 # - librosa>=0.8.0

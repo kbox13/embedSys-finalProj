@@ -36,6 +36,8 @@ try:
     from BeatNet.BeatNet import BeatNet
     from beat_predictor_kf import BeatPredictorKF
     from beat_logger import BeatLogger
+    from beat_visualizer import BeatVisualizer
+    from vispy import app
 except ImportError as e:
     print(f"Error importing required modules: {e}")
     print("Please install required dependencies:")
@@ -47,7 +49,7 @@ class BeatNetStreamingAnalyzer:
     """
     Real-time BeatNet analyzer for system audio streaming
     """
-    
+
     def __init__(self, model: int = 1, device_id: Optional[int] = None, 
                  plot: bool = False, thread: bool = False, async_mode: bool = False):
         """
@@ -70,35 +72,28 @@ class BeatNetStreamingAnalyzer:
         self.audio = None
         self.stream_thread: Optional[threading.Thread] = None
         self.output_queue: "queue.Queue[Any]" = queue.Queue(maxsize=32)
-        
+
         # Beat processing system
         self.beat_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=128)
         self.beat_thread: Optional[threading.Thread] = None
         self.processed_events = set()  # Track processed events to avoid duplicates
-        
+
         # Beat tracking results
         self.current_beats = []
         self.current_downbeats = []
         self.last_beat_time = 0.0
-        
+
         # Statistics
         self.frame_count = 0
         self.start_time = None
         self.stream_wallclock_offset = None
-        
+
         # Beat predictor for timing estimation
         self.predictor = BeatPredictorKF()
-        
+
         # Wallclock mapping parameters
         self.offset_ema_alpha = 0.1  # EMA smoothing factor for offset estimation
-        
-        # Beat logger
-        self.beat_logger = BeatLogger(
-            log_to_console=True,
-            log_to_file=True,
-            log_format="detailed"
-        )
-        
+
     def list_audio_devices(self) -> List[Dict[str, Any]]:
         """
         List available audio input devices
@@ -108,10 +103,10 @@ class BeatNetStreamingAnalyzer:
         """
         audio = pyaudio.PyAudio()
         devices = []
-        
+
         print("\nAvailable Audio Input Devices:")
         print("-" * 50)
-        
+
         for i in range(audio.get_device_count()):
             device_info = audio.get_device_info_by_index(i)
             if device_info['maxInputChannels'] > 0:
@@ -125,10 +120,10 @@ class BeatNetStreamingAnalyzer:
                 print(f"  Channels: {device_info['maxInputChannels']}")
                 print(f"  Sample Rate: {device_info['defaultSampleRate']}")
                 print()
-        
+
         audio.terminate()
         return devices
-    
+
     def initialize_beatnet(self) -> bool:
         """
         Initialize BeatNet with streaming mode
@@ -138,7 +133,7 @@ class BeatNetStreamingAnalyzer:
         """
         try:
             print(f"Initializing BeatNet model {self.model_num}...")
-            
+
             # Configure plotting
             plot_list = []
             if self.plot_enabled:
@@ -148,7 +143,7 @@ class BeatNetStreamingAnalyzer:
                 print("Plotting cannot be used with threading or async mode; disabling plotting.")
                 self.plot_enabled = False
                 plot_list = []
-            
+
             # Initialize BeatNet
             self.beatnet = BeatNet(
                 model=self.model_num,
@@ -159,14 +154,14 @@ class BeatNetStreamingAnalyzer:
                 device='cpu',  # Use CPU for better compatibility
                 input_device_index=self.device_id
             )
-            
+
             print("BeatNet initialized successfully!")
             return True
-            
+
         except Exception as e:
             print(f"Error initializing BeatNet: {e}")
             return False
-    
+
     def setup_audio_stream(self) -> bool:
         """
         Setup PyAudio stream for system audio capture
@@ -178,60 +173,44 @@ class BeatNetStreamingAnalyzer:
         # Nothing to do here; keep method for CLI flow compatibility.
         print("Using BeatNet-managed audio stream (no separate stream created).")
         return True
-    
+
     def process_individual_beat(self, event_data: Dict[str, Any]):
         """
         Process a single beat/downbeat event
-        
+
         Args:
             event_data: Dictionary containing event information
+
+        Returns:
+            Dictionary containing processed beat data for logging
         """
         beat_time = event_data['beat_time']
         wall_beat_time = event_data.get('wall_beat_time', beat_time)
         event_type = event_data.get('event_type', 1)  # 1=beat, 2=downbeat
-        
+
         # Calculate relative time from program start for logging
         if self.start_time is not None:
             relative_time = wall_beat_time - self.start_time
         else:
             relative_time = beat_time
-        
+
         # Update predictor with stream time (predictor doesn't care about absolute vs relative)
         self.predictor.observe(beat_time)
-        
+
         # Get predictions for next beats
         preds = self.predictor.predict_next_beats(beat_time, k=4)
         sigma = self.predictor.confidence_std()
-        
-        # Log this specific event (beats and downbeats)
+
+        # Return processed data for external logging
         action_type = 'beat_event' if event_type == 1 else 'downbeat_event'
-        self.beat_logger.queue_beat_action(
-            action_type=action_type,
-            beat_time=relative_time,  # Use relative time for logging
-            predicted_beats=preds,
-            confidence_std=sigma
-        )
-        
-        # Update display arrays based on event type
-        if event_type == 1:  # Regular beat
-            self.current_beats.append(beat_time)
-            if len(self.current_beats) > 100:  # Keep only recent beats
-                self.current_beats = self.current_beats[-50:]
-        elif event_type == 2:  # Downbeat
-            self.current_downbeats.append(beat_time)
-            if len(self.current_downbeats) > 100:  # Keep only recent downbeats
-                self.current_downbeats = self.current_downbeats[-50:]
-        
-        # Pretty print
-        ahead = ", ".join([f"{p:+.3f}s" for p in preds]) if preds else "n/a"
-        event_label = "Beat" if event_type == 1 else "Downbeat"
-        print(
-            f"\r🎵 {event_label}: {beat_time:.3f}s | "
-            f"Beats:{len(self.current_beats):3d} DB:{len(self.current_downbeats):3d} | "
-            f"Next4: {ahead} (±{int(1e3*sigma)}ms) | frame:{self.frame_count}",
-            end="", flush=True
-        )
-    
+        return {
+            "action_type": action_type,
+            "beat_time": relative_time,  # Use relative time for logging
+            "wall_beat_time": wall_beat_time,  # Return this so it is available
+            "predicted_beats": preds,
+            "confidence_std": sigma,
+        }
+
     def process_beat_results(self, output):
         """
         Legacy method for synchronous mode - now just calls individual beat processing
@@ -241,49 +220,45 @@ class BeatNetStreamingAnalyzer:
 
         # BeatNet columns: [:,0]=time(s), [:,1]=flag (1=beat, 2=downbeat)
         beats = output[output[:, 1] == 1]  # Only beats, not downbeats
-        
+
         if len(beats) > 0:
             # Process each beat individually
             for beat_row in beats:
                 beat_time_stream = beat_row[0]
                 now_wall = time.time()
                 wall_beat_time = self._to_wallclock(beat_time_stream, now_wall)
-                
+
                 beat_data = {
                     'beat_time': beat_time_stream,
                     'wall_beat_time': wall_beat_time,
                     'timestamp': now_wall,
                     'frame_count': self.frame_count
                 }
-                
+
                 self.process_individual_beat(beat_data)
-    
+
     def run_streaming_analysis(self):
         """
         Main streaming analysis loop
         """
         print("\n🎵 Starting BeatNet streaming analysis...")
         print("Press Ctrl+C to stop\n")
-        
+
         self.running = True
         self.start_time = time.time()
-        
-        # Start beat logger
-        self.beat_logger.start()
-        
+
         try:
             # Delegate streaming, inference, and plotting to BeatNet as per README
             # This call blocks while the internal stream is active until interrupted
             self.beatnet.process()
-                
+
         except KeyboardInterrupt:
             print("\n\nKeyboard interrupt. Stopping analysis...")
         except Exception as e:
             print(f"\nError during analysis: {e}")
         finally:
-            self.beat_logger.stop()
             self.cleanup()
-    
+
     def _to_wallclock(self, ts_stream: float, now_wall: float) -> float:
         """
         Map BeatNet's stream time (seconds since stream start) to wall-clock seconds.
@@ -307,49 +282,46 @@ class BeatNetStreamingAnalyzer:
         try:
             self.running = True
             self.start_time = time.time()
-            
-            # Start beat logger
-            self.beat_logger.start()
-            
+
             while self.running and self.beatnet.stream.is_active():
                 # Extract features for current frame
                 self.beatnet.activation_extractor_stream()
                 # Increment BeatNet frame counter
                 self.beatnet.counter += 1
-                
+
                 # Once warm, run inference and detect beats
                 if self.beatnet.counter >= 5:
                     output = self.beatnet.estimator.process(self.beatnet.pred)
-                    
+
                     if output is not None and len(output) > 0:
                         # Extract beat times from BeatNet output
                         # BeatNet columns: [:,0]=time(s), [:,1]=flag (1=beat, 2=downbeat)
-                        
+
                         if len(output) > 0:
                             # Process each event individually with deduplication
                             for event_row in output:
                                 event_time_stream = event_row[0]
                                 event_type = event_row[1]  # 1=beat, 2=downbeat
-                                
+
                                 # Create unique key for deduplication (time + type)
                                 # Use 10ms tolerance for time matching
                                 time_key = round(event_time_stream, 2)  # Round to 10ms
                                 dedup_key = (time_key, event_type)
-                                
+
                                 # Only queue if we haven't seen this exact event before
                                 if dedup_key not in self.processed_events:
                                     self.processed_events.add(dedup_key)
-                                    
+
                                     # Clean up old processed events (keep only last 1000)
                                     if len(self.processed_events) > 1000:
                                         # Remove oldest 500 events
                                         old_events = list(self.processed_events)[:500]
                                         for old_event in old_events:
                                             self.processed_events.discard(old_event)
-                                    
+
                                     now_wall = time.time()
                                     wall_event_time = self._to_wallclock(event_time_stream, now_wall)
-                                    
+
                                     # Queue this unique event for main thread processing
                                     event_data = {
                                         'beat_time': event_time_stream,
@@ -358,7 +330,7 @@ class BeatNetStreamingAnalyzer:
                                         'timestamp': now_wall,
                                         'frame_count': self.frame_count
                                     }
-                                    
+
                                     try:
                                         self.beat_queue.put_nowait(event_data)
                                     except queue.Full:
@@ -368,14 +340,13 @@ class BeatNetStreamingAnalyzer:
                                             self.beat_queue.put_nowait(event_data)
                                         except queue.Empty:
                                             pass
-                
+
                 self.frame_count += 1
                 time.sleep(0.001)  # ~1000 FPS
-                
+
         except Exception as e:
             print(f"\nError in beat detection worker: {e}")
         finally:
-            self.beat_logger.stop()
             self.cleanup()
 
     # ---------------------- Async API ----------------------
@@ -384,10 +355,7 @@ class BeatNetStreamingAnalyzer:
         try:
             self.running = True
             self.start_time = time.time()
-            
-            # Start beat logger
-            self.beat_logger.start()
-            
+
             while self.running and self.beatnet.stream.is_active():
                 # Extract features for current frame
                 self.beatnet.activation_extractor_stream()
@@ -412,7 +380,6 @@ class BeatNetStreamingAnalyzer:
         except Exception as e:
             print(f"\nError in async streaming worker: {e}")
         finally:
-            self.beat_logger.stop()
             self.cleanup()
 
     def start_async(self) -> None:
@@ -422,11 +389,11 @@ class BeatNetStreamingAnalyzer:
         if not self.beatnet:
             if not self.initialize_beatnet():
                 raise RuntimeError("Failed to initialize BeatNet")
-        
+
         # Start background beat detection
         self.beat_thread = threading.Thread(target=self._beat_detection_worker, daemon=True)
         self.beat_thread.start()
-        
+
         print("Async beat detection started. Processing beats in main thread...")
 
     def stop_async(self) -> None:
@@ -443,7 +410,7 @@ class BeatNetStreamingAnalyzer:
             return self.output_queue.get_nowait()
         except queue.Empty:
             return None
-    
+
     def get_next_beat(self, timeout: Optional[float] = 0.1):
         """Fetch the next beat from the queue. Returns None if no beat available."""
         try:
@@ -452,23 +419,20 @@ class BeatNetStreamingAnalyzer:
             return self.beat_queue.get_nowait()
         except queue.Empty:
             return None
-    
+
     def cleanup(self):
         """
         Clean up resources
         """
         self.running = False
-        
-        # Stop beat logger
-        self.beat_logger.stop()
-        
+
         if self.beatnet and hasattr(self.beatnet, 'stream'):
             self.beatnet.stream.stop_stream()
             self.beatnet.stream.close()
-        
+
         if self.audio:
             self.audio.terminate()
-        
+
         # Display final statistics
         if self.start_time:
             duration = time.time() - self.start_time
@@ -500,7 +464,7 @@ Examples:
   python beatnet_streaming.py --list-devices     # List available devices
         """
     )
-    
+
     parser.add_argument('--device', type=int, default=None,
                        help='Audio input device ID (use --list-devices to see available)')
     parser.add_argument('--model', type=int, choices=[1, 2, 3], default=1,
@@ -513,12 +477,12 @@ Examples:
                        help='Run streaming asynchronously and print outputs non-blocking')
     parser.add_argument('--list-devices', action='store_true',
                        help='List available audio input devices and exit')
-    
+
     args = parser.parse_args()
-    
+
     # Set up signal handler
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     # Create analyzer
     analyzer = BeatNetStreamingAnalyzer(
         model=args.model,
@@ -527,35 +491,85 @@ Examples:
         thread=args.thread,
         async_mode=args.async_mode
     )
-    
+
     # List devices if requested
     if args.list_devices:
         analyzer.list_audio_devices()
         return
-    
+
     # Initialize BeatNet
     if not analyzer.initialize_beatnet():
         print("Failed to initialize BeatNet. Exiting.")
         sys.exit(1)
 
+    # Initialize beat logger
+    beat_logger = BeatLogger(
+        log_to_console=True, log_to_file=True, log_format="detailed"
+    )
+
+    # Initialize beat visualizer
+    beat_visualizer = BeatVisualizer()
+    beat_visualizer.start()  # Start the visualization window
+
     # Async or blocking
     if args.async_mode:
         analyzer.start_async()
+        beat_logger.start()
         print("Streaming started asynchronously. Press Ctrl+C to stop.\n")
-        try:
-            while True:
+
+        # Start Vispy event loop in a timer-based approach
+        def process_beats_and_update():
+            try:
                 # Process beats as they arrive
-                beat_data = analyzer.get_next_beat(timeout=0.2)
+                beat_data = analyzer.get_next_beat(timeout=0.1)
                 if beat_data is not None:
-                    analyzer.process_individual_beat(beat_data)
+                    beat_action = analyzer.process_individual_beat(beat_data)
+                    beat_logger.queue_beat_action(
+                        action_type=beat_action["action_type"],
+                        beat_time=beat_action["beat_time"],
+                        predicted_beats=beat_action["predicted_beats"],
+                        confidence_std=beat_action["confidence_std"],
+                    )
+                    beat_visualizer.queue_visualization_action(
+                        action_type=beat_action["action_type"],
+                        beat_time=beat_action["beat_time"],
+                        wall_beat_time=beat_action["wall_beat_time"],
+                        predicted_beats=beat_action["predicted_beats"],
+                        confidence_std=beat_action["confidence_std"],
+                    )
+
+                # Process Vispy events
+                app.process_events()
+
+                # Schedule next update
+                if analyzer.running:
+                    timer = threading.Timer(0.1, process_beats_and_update)
+                    timer.daemon = True
+                    timer.start()
+
+            except Exception as e:
+                print(f"Error in beat processing: {e}")
+
+        # Start the processing loop
+        process_beats_and_update()
+
+        try:
+            # Run Vispy app (this will block until window is closed)
+            app.run()
         except KeyboardInterrupt:
             pass
         finally:
+            beat_logger.stop()
+            beat_visualizer.stop()
             analyzer.stop_async()
     else:
-        analyzer.run_streaming_analysis()
+        beat_logger.start()
+        try:
+            analyzer.run_streaming_analysis()
+        finally:
+            beat_logger.stop()
+            beat_visualizer.stop()
 
 
 if __name__ == "__main__":
     main()
-
