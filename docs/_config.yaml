@@ -1,0 +1,8 @@
+# Configuration Options
+title: Predicting Percussive Events to Trigger Lighting Events on an Embedded Device
+author: "Kevin Box"
+theme: minima
+
+header-pages:
+  - index.html
+  - essentia_pipe.html
