@@ -102,6 +102,7 @@ AlgorithmStatus ZeroMQPublisher::process() {
 
     // Publish when buffer is full
     if (_buffer.size() >= _buffer_size) {
+        std::cout << "Publishing " << _buffer.size() << " frames" << std::endl;
         publishBufferedData();
     }
 

@@ -28,11 +28,12 @@ public:
 
   void declareParameters() {
     declareParameter("method", "Onset detection method", "{hfc,complex,complex_phase,flux,melflux,rms}", "hfc");
-    declareParameter("threshold", "Detection threshold (0-1)", "[0,1]", 0.3);
+    declareParameter("threshold", "Detection threshold or MAD multiplier (adaptive)", "[0,10]", 0.3);
     declareParameter("refractory", "Refractory period in frames", "[0,inf)", 6);
     declareParameter("warmup", "Frames before detection enabled", "[0,inf)", 10);
     declareParameter("sensitivity", "Detection sensitivity multiplier", "[0.1,10]", 1.0);
     declareParameter("smooth_window", "Smoothing window size for detection function", "[1,inf)", 3);
+    declareParameter("odf_window", "Rolling window (frames) for adaptive thresholding", "[8,inf)", 64);
   }
 
   void configure();
@@ -55,6 +56,7 @@ private:
   int _warmup{10};
   Real _sensitivity{1.0f};
   int _smoothWindow{3};
+  int _odfWindow{64};
 
   // State
   int _refCount{0};
@@ -63,10 +65,14 @@ private:
   
   // Onset detection function history for smoothing
   std::vector<Real> _odfHistory;
+  std::vector<Real> _odfThreshHistory; // rolling history for adaptive thresholding
+  Real _prevSmoothed{0.0f};
+  bool _wasAbove{false};
   
   // Helper functions
   Real smoothODF(Real odfValue);
   bool detectOnset(Real odfValue);
+  std::pair<Real, Real> computeMedianAndMAD(const std::vector<Real>& values) const;
 };
 
 } // namespace streaming

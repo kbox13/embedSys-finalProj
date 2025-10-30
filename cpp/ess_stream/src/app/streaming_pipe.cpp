@@ -196,6 +196,22 @@ int main(int argc, char* argv[]) {
                                   "sensitivity", 1.6,
                                   "smooth_window", 2);
 
+  // Algorithm *bass_gate = F.create("HitGateQuantile",
+  //                                 "q_hi", 0.98,
+  //                                 "q_lo", 0.80,
+  //                                 "refractory", 4,
+  //                                 "warmup", 8);
+  // Algorithm *mid_gate = F.create("HitGateQuantile",
+  //                                "q_hi", 0.98,
+  //                                "q_lo", 0.80,
+  //                                "refractory", 4,
+  //                                "warmup", 8);
+  // Algorithm *high_gate = F.create("HitGateQuantile",
+  //                                 "q_hi", 0.98,
+  //                                 "q_lo", 0.80,
+  //                                 "refractory", 4,
+  //                                 "warmup", 8);
+
   // Create ZeroMQ publishers for each feature (all connecting to same port)
 //   Algorithm* bass_publisher = F.create("ZeroMQPublisher",
 //                                       "endpoint", "tcp://localhost:5555",

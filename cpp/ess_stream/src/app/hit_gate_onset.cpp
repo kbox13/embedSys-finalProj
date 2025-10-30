@@ -1,5 +1,7 @@
 #include "hit_gate_onset.h"
 #include <essentia/algorithmfactory.h>
+#include <algorithm>
+#include <vector>
 
 namespace essentia {
 namespace streaming {
@@ -27,7 +29,8 @@ void HitGateOnset::configure() {
   _warmup = parameter("warmup").toInt();
   _sensitivity = parameter("sensitivity").toReal();
   _smoothWindow = parameter("smooth_window").toInt();
-  
+  _odfWindow = parameter("odf_window").toInt();
+
   reset();
 }
 
@@ -35,9 +38,13 @@ void HitGateOnset::reset() {
   Algorithm::reset();
   _odfHistory.clear();
   _odfHistory.reserve(_smoothWindow * 2);
+  _odfThreshHistory.clear();
+  _odfThreshHistory.reserve(_odfWindow * 2);
   _refCount = 0;
   _framesSeen = 0;
   _detectionEnabled = false;
+  _prevSmoothed = 0.0f;
+  _wasAbove = false;
 }
 
 AlgorithmStatus HitGateOnset::process() {
@@ -89,12 +96,36 @@ AlgorithmStatus HitGateOnset::process() {
     
     // Apply smoothing to the ODF
     Real smoothedODF = smoothODF(odfValue);
-    
-    // Detect onset based on threshold
-    if (detectOnset(smoothedODF)) {
+
+    // Maintain rolling history for adaptive threshold
+    _odfThreshHistory.push_back(smoothedODF);
+    if ((int)_odfThreshHistory.size() > _odfWindow)
+    {
+      _odfThreshHistory.erase(_odfThreshHistory.begin());
+    }
+
+    // Adaptive threshold: median + k * MAD
+    Real dynamicThreshold = _threshold; // fallback
+    if (_odfThreshHistory.size() >= 8)
+    {
+      auto stats = computeMedianAndMAD(_odfThreshHistory);
+      Real median = stats.first;
+      Real mad = stats.second;
+      // Use _threshold as multiplier (k), clamp MAD floor to avoid zero
+      Real madFloor = std::max(1e-6f, mad);
+      dynamicThreshold = median + (_threshold > 0 ? _threshold : 0.3f) * madFloor;
+    }
+
+    // Edge-triggered peak pick: crossing above threshold while rising
+    bool above = smoothedODF > dynamicThreshold;
+    bool rising = smoothedODF >= _prevSmoothed;
+    if (above && !_wasAbove && rising)
+    {
       hit = 1.0f;
       _refCount = _refractory;
     }
+    _wasAbove = above;
+    _prevSmoothed = smoothedODF;
   }
 
   outBuf[0] = hit;
@@ -131,6 +162,36 @@ bool HitGateOnset::detectOnset(Real odfValue) {
   // In a more sophisticated implementation, we could use peak detection
   // or adaptive thresholds based on the ODF history
   return scaledODF > _threshold;
+}
+
+std::pair<Real, Real> HitGateOnset::computeMedianAndMAD(const std::vector<Real> &values) const
+{
+  if (values.empty())
+    return {0.0f, 0.0f};
+  std::vector<Real> copyVals(values.begin(), values.end());
+  size_t n = copyVals.size();
+  size_t mid = n / 2;
+  std::nth_element(copyVals.begin(), copyVals.begin() + mid, copyVals.end());
+  Real median = copyVals[mid];
+  if ((n % 2) == 0)
+  {
+    auto maxLower = *std::max_element(copyVals.begin(), copyVals.begin() + mid);
+    median = (median + maxLower) * 0.5f;
+  }
+  // Compute absolute deviations
+  std::vector<Real> devs;
+  devs.reserve(n);
+  for (Real v : values)
+    devs.push_back(std::abs(v - median));
+  size_t midDev = devs.size() / 2;
+  std::nth_element(devs.begin(), devs.begin() + midDev, devs.end());
+  Real mad = devs[midDev];
+  if ((devs.size() % 2) == 0)
+  {
+    auto maxLowerDev = *std::max_element(devs.begin(), devs.begin() + midDev);
+    mad = (mad + maxLowerDev) * 0.5f;
+  }
+  return {median, mad};
 }
 
 } // namespace streaming
