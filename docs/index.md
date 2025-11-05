@@ -32,8 +32,8 @@ My approach to complete this project is broken up logically into the 2 parts. Cr
 ## Timeline
 - Week 3: Installed and made BeatNet functional
 - Week 4: Install and create a basic streaming pipeline in Essentia
-- **Week 5:** Complete full essentia streaming pipeline with predictions and visualizations 
-- Week 6: Begin work on embedded side, execute time synced events en embedded platform
+- Week 5: Complete full essentia streaming pipeline with predictions and visualizations 
+- **Week 6**: Begin work on embedded side, execute time synced events on an embedded platform
 - Week 7: Midterm Checkpoint, create presentation and video of intial demo of integration of both parts. Update website and repo with progress
 - Week 8: Finish integration and create accuracy testing framework.
 - Week 9: Expand lighting side past triggering a single event. Make lighting more dynamic. 
