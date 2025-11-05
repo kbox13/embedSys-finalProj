@@ -42,7 +42,13 @@ add_executable(ess_stream
   src/app/hit_gate_quantile.cpp
   src/app/hit_gate_multiframe.cpp
   src/app/hit_gate_onset.cpp
+  src/app/vector_index.cpp
+  src/app/vector_pack5.cpp
+  src/app/instrument_sum.cpp
+  src/app/instrument_predictor.cpp
   src/app/zeromq_publisher.cpp
+  src/app/hit_prediction_logger.cpp
+  src/app/gate_logger_sink.cpp
 )
 
 target_include_directories(ess_stream PRIVATE

@@ -28,12 +28,14 @@
 #include <essentia/streaming/algorithms/poolstorage.h>
 #include <essentia/streaming/algorithms/ringbufferinput.h>
 #include <essentia/scheduler/network.h>
-#include "sumrange.h"
-#include "hit_gate_quantile.h"
-#include "hit_gate_multiframe.h"
 #include "hit_gate_onset.h"
+#include "instrument_sum.h"
+#include "vector_index.h"
+#include "vector_pack5.h"
+#include "hit_prediction_logger.h" // Include before instrument_predictor.h
+#include "instrument_predictor.h"
 #include "zeromq_publisher.h"
-
+#include "gate_logger_sink.h"
 
 using namespace std;
 using namespace essentia;
@@ -43,20 +45,24 @@ using namespace essentia::scheduler;
 static std::atomic<bool> g_running{true};
 
 // Simple lock-free circular buffer for float audio (single-producer PortAudio, single-consumer Essentia)
-struct Ring {
+struct Ring
+{
   explicit Ring(size_t cap) : buf(cap), cap(cap) {}
   vector<float> buf;
   size_t cap;
   atomic<size_t> head{0}, tail{0}; // head = write, tail = read
 
   // push up to n samples, returns how many written
-  size_t push(const float* in, size_t n) {
+  size_t push(const float *in, size_t n)
+  {
     size_t written = 0;
-    while (written < n) {
+    while (written < n)
+    {
       size_t h = head.load(memory_order_relaxed);
       size_t t = tail.load(memory_order_acquire);
       size_t free = (t + cap - h - 1) % cap; // leave 1 slot to distinguish full/empty
-      if (free == 0) break;
+      if (free == 0)
+        break;
       size_t to = min(free, n - written);
       size_t idx = h % cap;
       size_t chunk = min(to, cap - idx);
@@ -68,49 +74,60 @@ struct Ring {
   }
 
   // pop exactly n samples if available; returns false if not enough data
-  bool pop(float* out, size_t n) {
+  bool pop(float *out, size_t n)
+  {
     size_t t = tail.load(memory_order_relaxed);
     size_t h = head.load(memory_order_acquire);
     size_t available = (h + cap - t) % cap;
-    if (available < n) return false;
+    if (available < n)
+      return false;
     size_t idx = t % cap;
     size_t chunk = min(n, cap - idx);
     memcpy(out, &buf[idx], chunk * sizeof(float));
-    if (n > chunk) memcpy(out + chunk, &buf[0], (n - chunk) * sizeof(float));
+    if (n > chunk)
+      memcpy(out + chunk, &buf[0], (n - chunk) * sizeof(float));
     tail.store((t + n) % cap, memory_order_release);
     return true;
   }
 };
 
 // PortAudio stream callback: write input frames into Ring
-static int paCallback(const void* input, void*, unsigned long frameCount,
-                      const PaStreamCallbackTimeInfo*, PaStreamCallbackFlags, void* userData) {
-  auto* ring = reinterpret_cast<Ring*>(userData);
-  if (!input) return paContinue;
-  const float* in = static_cast<const float*>(input);
+static int paCallback(const void *input, void *, unsigned long frameCount,
+                      const PaStreamCallbackTimeInfo *, PaStreamCallbackFlags, void *userData)
+{
+  auto *ring = reinterpret_cast<Ring *>(userData);
+  if (!input)
+    return paContinue;
+  const float *in = static_cast<const float *>(input);
   size_t pushed = ring->push(in, frameCount);
   (void)pushed; // best-effort; drop if ring is full
   return g_running ? paContinue : paComplete;
 }
 
-static void ensurePa(PaError err, const char* where) {
-  if (err != paNoError) {
+static void ensurePa(PaError err, const char *where)
+{
+  if (err != paNoError)
+  {
     cerr << where << " failed: " << Pa_GetErrorText(err) << endl;
     exit(2);
   }
 }
 
 // Find the first input device whose name contains "BlackHole"
-static int findBlackHoleDevice() {
+static int findBlackHoleDevice()
+{
   int num = Pa_GetDeviceCount();
-  for (int i = 0; i < num; ++i) {
-    const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
-    if (!info) continue;
-    const PaHostApiInfo* api = Pa_GetHostApiInfo(info->hostApi);
+  for (int i = 0; i < num; ++i)
+  {
+    const PaDeviceInfo *info = Pa_GetDeviceInfo(i);
+    if (!info)
+      continue;
+    const PaHostApiInfo *api = Pa_GetHostApiInfo(info->hostApi);
     std::string name = info->name ? info->name : "";
     std::string apiName = api && api->name ? api->name : "";
     // Look for CoreAudio device named like "BlackHole 2ch"
-    if (name.find("BlackHole") != std::string::npos && info->maxInputChannels > 0) {
+    if (name.find("BlackHole") != std::string::npos && info->maxInputChannels > 0)
+    {
       cerr << "Using input device: [" << i << "] " << name << " via " << apiName << endl;
       return i;
     }
@@ -118,20 +135,49 @@ static int findBlackHoleDevice() {
   return paNoDevice;
 }
 
-int main(int argc, char* argv[]) {
-  if (argc != 2) {
-    cerr << "Usage: " << argv[0] << " output.yaml\n";
+int main(int argc, char *argv[])
+{
+  if (argc < 2 || argc > 3)
+  {
+    cerr << "Usage: " << argv[0] << " output.yaml [timeout_seconds]\n";
+    cerr << "  output.yaml: Output file path\n";
+    cerr << "  timeout_seconds: Optional timeout in seconds (default: 20)\n";
     return 1;
   }
   string outputFilename = argv[1];
+
+  // Parse optional timeout argument
+  int timeoutSeconds = 20; // default
+  if (argc == 3)
+  {
+    try
+    {
+      timeoutSeconds = std::stoi(argv[2]);
+      if (timeoutSeconds <= 0)
+      {
+        cerr << "Error: timeout must be a positive integer\n";
+        return 1;
+      }
+    }
+    catch (const std::exception &e)
+    {
+      cerr << "Error: invalid timeout value '" << argv[2] << "': " << e.what() << "\n";
+      return 1;
+    }
+  }
 
   // ---------- Essentia init ----------
   essentia::init();
 
   // Parameters (match your original example)
   const Real sampleRate = 44100.0;
+  const int sampleRateInt = 44100;
   const int frameSize = 1024;
   const int hopSize = 256;
+
+  // Create logger instance for hits and predictions
+  HitPredictionLogger logger(sampleRate, hopSize, "logs");
+  streaming::GateLoggerSink::register_logger(&logger); // Register for gate loggers to access
 
   // Pool to collect features
   Pool pool;
@@ -141,21 +187,21 @@ int main(int argc, char* argv[]) {
 
   // Manually register RingBufferInput since it's not in the factory
   AlgorithmFactory::Registrar<streaming::RingBufferInput> regRingBufferInput;
-  
-  // Register our custom SumRange algorithm
-  AlgorithmFactory::Registrar<streaming::SumRange> regSumRange;
-
-  // Register our custom HitGateQuantile algorithm
-  AlgorithmFactory::Registrar<streaming::HitGateQuantile> regHitGateQuantile;
-
-  // Register our custom HitGateMultiFrame algorithm
-  AlgorithmFactory::Registrar<streaming::HitGateMultiFrame> regHitGateMultiFrame;
 
   // Register our custom HitGateOnset algorithm
   AlgorithmFactory::Registrar<streaming::HitGateOnset> regHitGateOnset;
 
+  // Register instrument aggregator and helpers
+  AlgorithmFactory::Registrar<streaming::InstrumentSum> regInstrumentSum;
+  AlgorithmFactory::Registrar<streaming::VectorIndex> regVectorIndex;
+  AlgorithmFactory::Registrar<streaming::VectorPack5> regVectorPack5;
+  AlgorithmFactory::Registrar<streaming::InstrumentPredictor> regInstrumentPredictor;
+
   // Register our custom ZeroMQPublisher algorithm
   AlgorithmFactory::Registrar<streaming::ZeroMQPublisher> regZeroMQPublisher;
+
+  // Register gate logger sink for hit/prediction logging
+  AlgorithmFactory::Registrar<streaming::GateLoggerSink> regGateLoggerSink;
 
   // Create algorithms
   Algorithm* fc   = F.create("FrameCutter",
@@ -165,81 +211,41 @@ int main(int argc, char* argv[]) {
 
   Algorithm* win  = F.create("Windowing", "type", "blackmanharris62");
   Algorithm* spec = F.create("Spectrum");
-  Algorithm* melbands = F.create("MelBands");
-  const int BASS_LO = 0,  BASS_HI = 5;    // ~≤250 Hz
-  const int MID_LO  = 6,  MID_HI  = 24;   // ~250 Hz–2 kHz
-  const int HIGH_LO = 25, HIGH_HI = 63;   // ~≥2 kHz
-
-  Algorithm* bass = F.create("SumRange", "lo", BASS_LO, "hi", BASS_HI);
-  Algorithm* mid = F.create("SumRange", "lo", MID_LO, "hi", MID_HI);
-  Algorithm* high = F.create("SumRange", "lo", HIGH_LO, "hi", HIGH_HI);
-
-  Algorithm* bass_gate = F.create("HitGateOnset",
-                                 "method", "hfc",
-                                 "threshold", 0.2,
-                                 "refractory", 4,
-                                 "warmup", 8,
-                                 "sensitivity", 1.5,
-                                 "smooth_window", 2);
-  Algorithm* mid_gate = F.create("HitGateOnset",
-                                 "method", "flux",
-                                 "threshold", 0.15,
-                                 "refractory", 4,
-                                 "warmup", 8,
-                                 "sensitivity", 1.8,
-                                 "smooth_window", 2);
-  Algorithm* high_gate = F.create("HitGateOnset",
-                                  "method", "hfc",
-                                  "threshold", 0.18,
-                                  "refractory", 4,
-                                  "warmup", 8,
-                                  "sensitivity", 1.6,
-                                  "smooth_window", 2);
-
-  // Algorithm *bass_gate = F.create("HitGateQuantile",
-  //                                 "q_hi", 0.98,
-  //                                 "q_lo", 0.80,
-  //                                 "refractory", 4,
-  //                                 "warmup", 8);
-  // Algorithm *mid_gate = F.create("HitGateQuantile",
-  //                                "q_hi", 0.98,
-  //                                "q_lo", 0.80,
-  //                                "refractory", 4,
-  //                                "warmup", 8);
-  // Algorithm *high_gate = F.create("HitGateQuantile",
-  //                                 "q_hi", 0.98,
-  //                                 "q_lo", 0.80,
-  //                                 "refractory", 4,
-  //                                 "warmup", 8);
-
-  // Create ZeroMQ publishers for each feature (all connecting to same port)
-//   Algorithm* bass_publisher = F.create("ZeroMQPublisher",
-//                                       "endpoint", "tcp://localhost:5555",
-//                                       "feature_name", "bass",
-//                                       "buffer_size", 1);
-//   Algorithm* mid_publisher = F.create("ZeroMQPublisher",
-//                                      "endpoint", "tcp://localhost:5555",
-//                                      "feature_name", "mid",
-//                                      "buffer_size", 1);
-//   Algorithm* high_publisher = F.create("ZeroMQPublisher",
-//                                       "endpoint", "tcp://localhost:5555",
-//                                       "feature_name", "high",
-//                                       "buffer_size", 1);
-  Algorithm* bass_gate_publisher = F.create("ZeroMQPublisher",
+  Algorithm *melbands = F.create("MelBands",
+                                 "numberBands", 64,
+                                 "sampleRate", sampleRate);
+  Algorithm *instr = F.create("InstrumentSum",
+                              "sampleRate", sampleRateInt,
+                              "expectedBands", 64,
+                              "lobeRolloff", 0.15);
+  // Create ZeroMQ publishers for each instrument gate
+  Algorithm *kick_gate_publisher = F.create("ZeroMQPublisher",
+                                            "endpoint", "tcp://localhost:5555",
+                                            "feature_name", "gate.kick",
+                                            "buffer_size", 1,
+                                            "threshold", 0.5,
+                                            "threshold_mode", "above");
+  Algorithm *snare_gate_publisher = F.create("ZeroMQPublisher",
+                                             "endpoint", "tcp://localhost:5555",
+                                             "feature_name", "gate.snare",
+                                             "buffer_size", 1,
+                                             "threshold", 0.5,
+                                             "threshold_mode", "above");
+  Algorithm *clap_gate_publisher = F.create("ZeroMQPublisher",
+                                            "endpoint", "tcp://localhost:5555",
+                                            "feature_name", "gate.clap",
+                                            "buffer_size", 1,
+                                            "threshold", 0.5,
+                                            "threshold_mode", "above");
+  Algorithm *chat_gate_publisher = F.create("ZeroMQPublisher",
+                                            "endpoint", "tcp://localhost:5555",
+                                            "feature_name", "gate.chat",
+                                            "buffer_size", 1,
+                                            "threshold", 0.5,
+                                            "threshold_mode", "above");
+  Algorithm *ohc_gate_publisher = F.create("ZeroMQPublisher",
                                            "endpoint", "tcp://localhost:5555",
-                                           "feature_name", "bass_gate",
-                                           "buffer_size", 1,
-                                           "threshold", 0.5,
-                                           "threshold_mode", "above");
-  Algorithm* mid_gate_publisher = F.create("ZeroMQPublisher",
-                                          "endpoint", "tcp://localhost:5555",
-                                          "feature_name", "mid_gate",
-                                          "buffer_size", 1,
-                                          "threshold", 0.5,
-                                          "threshold_mode", "above");
-  Algorithm* high_gate_publisher = F.create("ZeroMQPublisher",
-                                           "endpoint", "tcp://localhost:5555",
-                                           "feature_name", "high_gate",
+                                           "feature_name", "gate.ohc",
                                            "buffer_size", 1,
                                            "threshold", 0.5,
                                            "threshold_mode", "above");
@@ -252,31 +258,130 @@ int main(int argc, char* argv[]) {
   fc->output("frame")      >> win->input("frame");
   win->output("frame")     >> spec->input("frame");
   spec->output("spectrum") >> melbands->input("spectrum");
-  melbands->output("bands") >> bass->input("in");
-  melbands->output("bands") >> mid->input("in");
-  melbands->output("bands") >> high->input("in");
-  
-  bass->output("out") >> PC(pool,"lowlevel.bass");
-  mid->output("out") >> PC(pool,"lowlevel.mid");
-  high->output("out") >> PC(pool,"lowlevel.high");
+  // Instrument aggregation from mel bands
+  melbands->output("bands") >> instr->input("in");
 
-  bass->output("out") >> bass_gate->input("in");
-  mid->output("out") >> mid_gate->input("in");
-  high->output("out") >> high_gate->input("in");
-  
-  bass_gate->output("out") >> PC(pool,"bass_gate");
-  mid_gate->output("out") >> PC(pool,"mid_gate");
-  high_gate->output("out") >> PC(pool,"high_gate");
+  // Extract per-instrument scalar sums (order: Kick, Snare, Clap, CHat, OHatCrash)
+  Algorithm *idx_kick = F.create("VectorIndex", "index", 0);
+  Algorithm *idx_snare = F.create("VectorIndex", "index", 1);
+  Algorithm *idx_clap = F.create("VectorIndex", "index", 2);
+  Algorithm *idx_chat = F.create("VectorIndex", "index", 3);
+  Algorithm *idx_ohc = F.create("VectorIndex", "index", 4);
 
-  // Connect each feature to its own ZeroMQ publisher
-  //bass->output("out") >> bass_publisher->input("in");
-  //mid->output("out") >> mid_publisher->input("in");
-  //high->output("out") >> high_publisher->input("in");
-  bass_gate->output("out") >> bass_gate_publisher->input("in");
-  mid_gate->output("out") >> mid_gate_publisher->input("in");
-  high_gate->output("out") >> high_gate_publisher->input("in");
- 
+  instr->output("out") >> idx_kick->input("in");
+  instr->output("out") >> idx_snare->input("in");
+  instr->output("out") >> idx_clap->input("in");
+  instr->output("out") >> idx_chat->input("in");
+  instr->output("out") >> idx_ohc->input("in");
 
+  idx_kick->output("out") >> PC(pool, "instrument.kick.sum");
+  idx_snare->output("out") >> PC(pool, "instrument.snare.sum");
+  idx_clap->output("out") >> PC(pool, "instrument.clap.sum");
+  idx_chat->output("out") >> PC(pool, "instrument.chat.sum");
+  idx_ohc->output("out") >> PC(pool, "instrument.ohc.sum");
+
+  // Instrument gates (adaptive onset gating on instrument sums)
+  // Kick: Increased threshold to 1.6 for more selectivity (fewer false positives)
+  Algorithm *kick_gate = F.create("HitGateOnset",
+                                  "method", "hfc",
+                                  "threshold", 10,
+                                  "refractory", 30,
+                                  "warmup", 8,
+                                  "sensitivity", 5,
+                                  "smooth_window", 2,
+                                  "odf_window", 64);
+  Algorithm *snare_gate = F.create("HitGateOnset",
+                                   "method", "flux",
+                                   "threshold", 1.4,
+                                   "refractory", 4,
+                                   "warmup", 8,
+                                   "sensitivity", 1.8,
+                                   "smooth_window", 2,
+                                   "odf_window", 64);
+  Algorithm *clap_gate = F.create("HitGateOnset",
+                                  "method", "flux",
+                                  "threshold", 1.4,
+                                  "refractory", 3,
+                                  "warmup", 8,
+                                  "sensitivity", 1.8,
+                                  "smooth_window", 2,
+                                  "odf_window", 48);
+  Algorithm *chat_gate = F.create("HitGateOnset",
+                                  "method", "hfc",
+                                  "threshold", 1.6,
+                                  "refractory", 3,
+                                  "warmup", 8,
+                                  "sensitivity", 1.6,
+                                  "smooth_window", 2,
+                                  "odf_window", 48);
+  Algorithm *ohc_gate = F.create("HitGateOnset",
+                                 "method", "hfc",
+                                 "threshold", 1.5,
+                                 "refractory", 4,
+                                 "warmup", 8,
+                                 "sensitivity", 1.6,
+                                 "smooth_window", 2,
+                                 "odf_window", 64);
+
+  idx_kick->output("out") >> kick_gate->input("in");
+  idx_snare->output("out") >> snare_gate->input("in");
+  idx_clap->output("out") >> clap_gate->input("in");
+  idx_chat->output("out") >> chat_gate->input("in");
+  idx_ohc->output("out") >> ohc_gate->input("in");
+
+  kick_gate->output("out") >> PC(pool, "gate.kick");
+  snare_gate->output("out") >> PC(pool, "gate.snare");
+  clap_gate->output("out") >> PC(pool, "gate.clap");
+  chat_gate->output("out") >> PC(pool, "gate.chat");
+  ohc_gate->output("out") >> PC(pool, "gate.ohc");
+
+  kick_gate->output("out") >> kick_gate_publisher->input("in");
+  // snare_gate->output("out") >> snare_gate_publisher->input("in");
+  // clap_gate->output("out") >> clap_gate_publisher->input("in");
+  // chat_gate->output("out") >> chat_gate_publisher->input("in");
+  // ohc_gate->output("out") >> ohc_gate_publisher->input("in");
+
+  // Create gate logger sinks for logging hits to file
+  Algorithm *kick_gate_logger = F.create("GateLoggerSink", "instrument_index", 0);
+  Algorithm *snare_gate_logger = F.create("GateLoggerSink", "instrument_index", 1);
+  Algorithm *clap_gate_logger = F.create("GateLoggerSink", "instrument_index", 2);
+  Algorithm *chat_gate_logger = F.create("GateLoggerSink", "instrument_index", 3);
+  Algorithm *ohc_gate_logger = F.create("GateLoggerSink", "instrument_index", 4);
+
+  // Wire gates to loggers (parallel to existing connections)
+  kick_gate->output("out") >> kick_gate_logger->input("in");
+  snare_gate->output("out") >> snare_gate_logger->input("in");
+  clap_gate->output("out") >> clap_gate_logger->input("in");
+  chat_gate->output("out") >> chat_gate_logger->input("in");
+  ohc_gate->output("out") >> ohc_gate_logger->input("in");
+
+  // Pack 5 gates into a single vector and publish once
+  Algorithm *gate_pack = F.create("VectorPack5");
+  kick_gate->output("out") >> gate_pack->input("in0");
+  snare_gate->output("out") >> gate_pack->input("in1");
+  clap_gate->output("out") >> gate_pack->input("in2");
+  chat_gate->output("out") >> gate_pack->input("in3");
+  ohc_gate->output("out") >> gate_pack->input("in4");
+
+  // Instrument hit predictor (consumes gate vector, publishes predictions)
+  Algorithm *predictor = F.create("InstrumentPredictor",
+                                  "sampleRate", sampleRateInt,
+                                  "hopSize", hopSize,
+                                  "endpoint", "tcp://localhost:5556",
+                                  "min_hits_for_seed", 8,
+                                  "min_bpm", 60,
+                                  "max_bpm", 200,
+                                  "horizon_seconds", 2.0,
+                                  "max_predictions_per_instrument", 2,
+                                  "confidence_threshold_min", 0.3,
+                                  "periodic_interval_sec", 0.15);
+  gate_pack->output("out") >> predictor->input("in");
+  predictor->output("out") >> PC(pool, "predictions");
+
+  // Set logger in predictor for logging predictions
+  static_cast<streaming::InstrumentPredictor *>(predictor)->set_logger(&logger);
+
+  // Note: predictor publishes to ZMQ directly, no zmq output connection needed but needed to run graph
 
   // Create network
   Network net(src);
@@ -353,6 +458,7 @@ int main(int argc, char* argv[]) {
   std::signal(SIGINT, [](int){ g_running = false; });
 
   cerr << "Streaming from BlackHole… processing audio in real-time..." << endl;
+  cerr << "Timeout set to " << timeoutSeconds << " seconds (Ctrl+C to stop early)" << endl;
 
   // Start the network in a separate thread for concurrent processing
   std::thread networkThread([&](){
@@ -367,8 +473,8 @@ int main(int argc, char* argv[]) {
   });
 
   // Wait for user to stop (Ctrl+C) or run for a specified duration
-  std::this_thread::sleep_for(std::chrono::seconds(20)); // Process for 20 seconds
-  
+  std::this_thread::sleep_for(std::chrono::seconds(timeoutSeconds));
+
   cerr << "Stopping streaming..." << endl;
   g_running = false;
   cerr << "g_running false..." << endl;
@@ -417,21 +523,26 @@ int main(int argc, char* argv[]) {
 
   // ---------- Aggregate & write YAML (same as your example) ----------
   Pool aggrPool;
-  const char* stats[] = {"mean","var","min","max","cov","icov"};
+  // Removed "cov" and "icov" to avoid singular matrix errors when data has insufficient variance
+  const char *stats[] = {"mean", "var", "min", "max"};
   standard::Algorithm* aggr = standard::AlgorithmFactory::create("PoolAggregator",
                                   "defaultStats", arrayToVector<string>(stats));
   aggr->input("input").set(pool);
   aggr->output("output").set(aggrPool);
   aggr->compute();
 
-  // Merge the frequency band data instead of MFCC
-  aggrPool.merge("lowlevel.bass.frames", pool.value<vector<Real>>("lowlevel.bass"));
-  aggrPool.merge("lowlevel.mid.frames", pool.value<vector<Real>>("lowlevel.mid"));
-  aggrPool.merge("lowlevel.high.frames", pool.value<vector<Real>>("lowlevel.high"));
+  // Store instrument sums and gates
+  aggrPool.merge("instrument.kick.sum.frames", pool.value<vector<Real>>("instrument.kick.sum"));
+  aggrPool.merge("instrument.snare.sum.frames", pool.value<vector<Real>>("instrument.snare.sum"));
+  aggrPool.merge("instrument.clap.sum.frames", pool.value<vector<Real>>("instrument.clap.sum"));
+  aggrPool.merge("instrument.chat.sum.frames", pool.value<vector<Real>>("instrument.chat.sum"));
+  aggrPool.merge("instrument.ohc.sum.frames", pool.value<vector<Real>>("instrument.ohc.sum"));
 
-  aggrPool.merge("bass_gate.frames", pool.value<vector<Real>>("bass_gate"));
-  aggrPool.merge("mid_gate.frames", pool.value<vector<Real>>("mid_gate"));
-  aggrPool.merge("high_gate.frames", pool.value<vector<Real>>("high_gate"));
+  aggrPool.merge("gate.kick.frames", pool.value<vector<Real>>("gate.kick"));
+  aggrPool.merge("gate.snare.frames", pool.value<vector<Real>>("gate.snare"));
+  aggrPool.merge("gate.clap.frames", pool.value<vector<Real>>("gate.clap"));
+  aggrPool.merge("gate.chat.frames", pool.value<vector<Real>>("gate.chat"));
+  aggrPool.merge("gate.ohc.frames", pool.value<vector<Real>>("gate.ohc"));
 
   standard::Algorithm* output = standard::AlgorithmFactory::create("YamlOutput",
                                   "filename", outputFilename);
@@ -441,12 +552,11 @@ int main(int argc, char* argv[]) {
   delete aggr;
   delete output;
   delete src;
-//   delete bass_publisher;
-//   delete mid_publisher;
-//   delete high_publisher;
-  delete bass_gate_publisher;
-  delete mid_gate_publisher;
-  delete high_gate_publisher;
+  delete kick_gate_publisher;
+  delete snare_gate_publisher;
+  delete clap_gate_publisher;
+  delete chat_gate_publisher;
+  delete ohc_gate_publisher;
   essentia::shutdown();
 
   cerr << "Wrote " << outputFilename << endl;

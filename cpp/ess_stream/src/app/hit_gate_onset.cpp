@@ -68,7 +68,8 @@ AlgorithmStatus HitGateOnset::process() {
   }
 
   // Perform onset detection if enabled
-  if (_detectionEnabled && _refCount == 0) {
+  if (_detectionEnabled)
+  {
     // Since we're working with frequency band energy (scalar), we'll implement
     // a simplified onset detection based on energy changes and peaks
     
@@ -122,10 +123,21 @@ AlgorithmStatus HitGateOnset::process() {
     if (above && !_wasAbove && rising)
     {
       hit = 1.0f;
-      _refCount = _refractory;
     }
     _wasAbove = above;
     _prevSmoothed = smoothedODF;
+  }
+
+  // modify the refractory logic, we want to always compute just not output a hit if it exists inside the refractory period
+  // keeps track of history well
+  // check the impact of this.
+  if (_refCount != 0)
+  {
+    hit = 0.0f;
+  }
+  if (hit == 1.0f)
+  {
+    _refCount = _refractory;
   }
 
   outBuf[0] = hit;
