@@ -1,0 +1,25 @@
+/*
+ * WiFi Configuration Template
+ * 
+ * Copy this file to wifi_config.h and fill in your credentials:
+ *   cp wifi_config.h.template wifi_config.h
+ * 
+ * Then edit wifi_config.h with your actual WiFi credentials.
+ * 
+ * IMPORTANT: wifi_config.h is in .gitignore and will NOT be committed to git.
+ */
+
+#ifndef WIFI_CONFIG_H
+#define WIFI_CONFIG_H
+
+// WiFi credentials
+static const char* WIFI_SSID = "YOUR_WIFI_SSID_HERE";
+static const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD_HERE";
+
+// MQTT broker configuration
+static const char* MQTT_BROKER = "192.168.1.100";  // Update with your broker IP
+static const int MQTT_PORT = 1883;
+static const char* MQTT_CLIENT_ID = "arduino_esp32_1";  // Change for multiple devices
+
+#endif // WIFI_CONFIG_H
+

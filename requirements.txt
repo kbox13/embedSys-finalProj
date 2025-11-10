@@ -36,6 +36,10 @@ mido>=1.2.6  # Required by BeatNet for MIDI file handling
 vispy
 PyQt6  # GUI backend for Vispy
 
+# MQTT and time synchronization for Arduino integration
+paho-mqtt>=1.6.0
+ntplib>=0.4.0
+
 # Note: BeatNet's setup.py handles its own specific dependency versions
 # The editable install (-e ./BeatNet) will automatically install:
 # - librosa>=0.8.0
