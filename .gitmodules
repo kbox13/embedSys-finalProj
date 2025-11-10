@@ -4,6 +4,6 @@
 [submodule "madmom"]
 	path = madmom
 	url = https://github.com/BigRedDoge/madmom.git
-[submodule "cpp/third_party/essentia"]
-	path = cpp/third_party/essentia
+[submodule "essentia"]
+	path = essentia
 	url = git@github.com:kbox13/essentia.git
