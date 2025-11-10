@@ -30,13 +30,77 @@ My approach to complete this project is broken up logically into the 2 parts. Cr
 
 
 ## Timeline
-- Week 3: Installed and made BeatNet functional
-- Week 4: Install and create a basic streaming pipeline in Essentia
-- Week 5: Complete full essentia streaming pipeline with predictions and visualizations 
-- **Week 6**: Begin work on embedded side, execute time synced events on an embedded platform
-- Week 7: Midterm Checkpoint, create presentation and video of intial demo of integration of both parts. Update website and repo with progress
-- Week 8: Finish integration and create accuracy testing framework.
-- Week 9: Expand lighting side past triggering a single event. Make lighting more dynamic. 
-- Week 10: Wrap up development into a polished product
-- Finals Week: Create final presenation an demo. 
+
+### Completed
+- Week 3: Installed and made BeatNet functional (exploratory)
+- Week 4: Installed and created basic streaming pipeline in Essentia
+- Week 5: Completed full Essentia streaming pipeline with predictions and visualizations
+  - FFT-based audio analysis
+  - Percussive event detection (gates)
+  - Instrument classification (Kick, Snare, Clap, Hi-Hat, Crash)
+  - ZeroMQ publishing for Python integration
+  - Kalman filter-based prediction (~100ms lookahead)
+  - Real-time visualization using Vispy
+- Week 6: Began work on embedded side
+  - Arduino Nano ESP32 firmware development
+  - MQTT communication implementation
+  - SNTP/NTP time synchronization
+  - Basic event scheduling
+- **Week 7**: Midterm Checkpoint
+  - Integration of Essentia pipeline → Arduino
+  - MQTT event publishing and scheduling
+- Week 8:  Finish integration and improved timing accuracy
+  - Finish Integration
+  - Create accuracy testing framework
+- Week 9: Enhanced system reliability and documentation
+  - Expand lighting side past triggering a single event. 
+  - Make lighting more dynamic.
+- Week 10: Final System
+  - Wrap up development into a polished product
+  - Complete documentation
+- Finals Week: Final presentation and demo
+  - Complete system demonstration
+  - Timing accuracy measurements
+  - Performance analysis
+  - Project documentation
+
+## Current System Status
+
+### ✅ Completed Components
+
+1. **Essentia Streaming Pipeline (C++)**
+   - Real-time audio capture and FFT analysis
+   - Multiple gate algorithms for percussive detection
+   - Instrument classification
+   - ZeroMQ publishing
+
+2. **Python Prediction & Communication Layer**
+   - ZeroMQ subscriber for Essentia events
+   - NTP time synchronization
+   - MQTT event publishing
+   - Real-time visualization
+
+3. **Embedded Device (Arduino Nano ESP32)**
+   - Dual-core FreeRTOS architecture
+   - MQTT subscription and event scheduling
+   - SNTP/NTP time synchronization
+   - Hardware timer interrupts for precise execution
+   - RGB LED control
+
+### System Performance
+
+- **Event Detection**: Real-time with ~10-50ms processing latency
+- **Prediction Lookahead**: ~100ms
+- **Time Sync Accuracy**: ±50ms initial, ±10ms after sync
+- **Event Execution Accuracy**: ±50µs (hardware timer)
+- **MQTT Latency**: 10-50ms (network dependent)
+
+### Architecture Highlights
+
+- **Separation of Concerns**: C++ for audio processing prediction, Python for communication, C++ for embedded execution
+  - Looking to remove python dependencies all together, used for quick prototyping.
+- **Standard Protocols**: ZeroMQ for inter-process communication, MQTT for device communication, NTP for time sync
+- **Precise Timing**: Hardware timer interrupts ensure microsecond-level accuracy
+- **Scalability**: MQTT pub/sub allows multiple devices
+- **Reliability**: Dual-core isolation, thread-safe operations, error handling 
   

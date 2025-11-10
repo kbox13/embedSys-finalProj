@@ -167,9 +167,12 @@ The device will output:
 
 ## Timing Accuracy
 
-- **Event Execution**: ±1ms (using micros() polling)
+- **Event Execution**: ±50µs (using hardware timer interrupts)
 - **Time Sync**: ±50ms initial, ±10ms after sync
+- **Hardware Timer**: ESP32 hardware timer (Timer Group 0, Timer 0) for microsecond-precise execution
 - **Suitable for**: Beat prediction with ~100ms lookahead
+
+**Note**: The system now uses hardware timer interrupts instead of polling, providing significantly improved timing accuracy. See `HARDWARE_TIMER_PLAN.md` and `ARCHITECTURE.md` for implementation details.
 
 ## Troubleshooting
 
@@ -195,6 +198,14 @@ The device will output:
 - Check time sync status
 - Verify event queue isn't full
 
+## Implementation Status
+
+- [x] Dual-core architecture (Core 0: Communication, Core 1: Execution) ✅ **COMPLETE**
+- [x] Thread-safe event queue ✅ **COMPLETE**
+- [x] SNTP/NTP time synchronization ✅ **COMPLETE**
+- [x] MQTT event scheduling ✅ **COMPLETE**
+- [x] RGB LED control ✅ **COMPLETE**
+
 ## Future Enhancements
 
 - [ ] Hardware timer interrupts for ±50µs precision
@@ -203,6 +214,7 @@ The device will output:
 - [ ] Pattern sequences
 - [ ] Fade effects
 - [ ] Multi-device coordination
+- [ ] Advanced timing modes (sequences, patterns)
 
 ## Files
 
