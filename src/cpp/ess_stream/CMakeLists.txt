@@ -15,7 +15,7 @@ endif()
 find_package(PkgConfig REQUIRED)
 
 # Set PKG_CONFIG_PATH to include our local Essentia installation
-set(ENV{PKG_CONFIG_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/essentia/_install/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+set(ENV{PKG_CONFIG_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/../../../essentia/_install/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
 
 # Find Essentia using pkg-config
 pkg_check_modules(ESSENTIA REQUIRED IMPORTED_TARGET essentia)
@@ -32,7 +32,7 @@ pkg_check_modules(ZMQ REQUIRED IMPORTED_TARGET libzmq)
 include_directories(/opt/homebrew/include)
 
 # Manually set paths as backup
-set(ESSENTIA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/essentia/_install")
+set(ESSENTIA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../essentia/_install")
 set(ESSENTIA_INCLUDE_DIRS "${ESSENTIA_ROOT}/include")
 set(ESSENTIA_LIBRARIES "${ESSENTIA_ROOT}/lib/libessentia.dylib")
 
@@ -64,6 +64,12 @@ target_link_libraries(ess_stream PRIVATE
   PkgConfig::PORTAUDIO
   PkgConfig::ZMQ
   ${ESSENTIA_LIBRARIES}
+)
+
+# Set rpath to find essentia library at runtime
+set_target_properties(ess_stream PROPERTIES
+  BUILD_RPATH "${ESSENTIA_ROOT}/lib"
+  INSTALL_RPATH "${ESSENTIA_ROOT}/lib"
 )
 
 target_compile_definitions(ess_stream PRIVATE
