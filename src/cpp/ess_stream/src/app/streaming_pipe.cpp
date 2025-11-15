@@ -36,6 +36,8 @@
 #include "instrument_predictor.h"
 #include "zeromq_publisher.h"
 #include "gate_logger_sink.h"
+#include "lighting_engine.h"
+#include "mqtt_publisher.h"
 
 using namespace std;
 using namespace essentia;
@@ -202,6 +204,10 @@ int main(int argc, char *argv[])
 
   // Register gate logger sink for hit/prediction logging
   AlgorithmFactory::Registrar<streaming::GateLoggerSink> regGateLoggerSink;
+
+  // Register lighting engine and MQTT publisher
+  AlgorithmFactory::Registrar<streaming::LightingEngine> regLightingEngine;
+  AlgorithmFactory::Registrar<streaming::MQTTPublisher> regMQTTPublisher;
 
   // Create algorithms
   Algorithm* fc   = F.create("FrameCutter",
@@ -381,6 +387,26 @@ int main(int argc, char *argv[])
   // Set logger in predictor for logging predictions
   static_cast<streaming::InstrumentPredictor *>(predictor)->set_logger(&logger);
 
+  // Create lighting engine and MQTT publisher for embedded device
+  Algorithm *lighting_engine = F.create("LightingEngine",
+                                        "confidence_threshold", 0.70,
+                                        "max_latency_sec", 2.0,
+                                        "min_latency_sec", 0.07,
+                                        "duplicate_window_sec", 0.4);
+  Algorithm *mqtt_publisher = F.create("MQTTPublisher",
+                                       "broker_host", "172.20.10.5",
+                                       "broker_port", 1883,
+                                       "topic", "beat/events/schedule",
+                                       "client_id", "essentia_lighting",
+                                       "batch_size", 1,
+                                       "batch_interval_ms", 50);
+
+  // Connect predictor predictions output to lighting engine
+  predictor->output("predictions") >> lighting_engine->input("in");
+
+  // Connect lighting engine output to MQTT publisher
+  lighting_engine->output("out") >> mqtt_publisher->input("in");
+
   // Note: predictor publishes to ZMQ directly, no zmq output connection needed but needed to run graph
 
   // Create network
@@ -557,6 +583,8 @@ int main(int argc, char *argv[])
   delete clap_gate_publisher;
   delete chat_gate_publisher;
   delete ohc_gate_publisher;
+  delete lighting_engine;
+  delete mqtt_publisher;
   essentia::shutdown();
 
   cerr << "Wrote " << outputFilename << endl;

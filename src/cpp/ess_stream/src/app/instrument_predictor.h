@@ -9,10 +9,12 @@
  * - Selective emission: on hits + periodic heartbeat
  *
  * Input:  TOKEN stream of std::vector<Real> per frame (5 instrument gates)
- * Output: TOKEN stream of std::vector<Real> per frame (not used directly, publishes via ZMQ)
+ * Output: TOKEN stream of std::vector<Real> per frame (dummy, not used directly)
+ *         TOKEN stream of PredictionOutput per frame (for lighting engine)
  */
 
 #include "streamingalgorithm.h"
+#include "prediction_types.h"
 #include <essentia/algorithmfactory.h>
 #include <vector>
 #include <deque>
@@ -29,7 +31,6 @@ namespace streaming {
 
 // Forward declare for helper structs
 struct InstrumentState;
-struct PredictionHit;
 
 class InstrumentPredictor : public Algorithm {
 public:
@@ -71,6 +72,7 @@ private:
   // IO connectors
   Sink<std::vector<Real>> _in;
   Source<std::vector<Real>> _out;  // Dummy output for Essentia graph
+  Source<PredictionOutput> _predictionOut; // Prediction output for lighting engine
 
   // Parameters
   Real _sampleRate;
@@ -98,6 +100,9 @@ private:
   Real _lastEmissionTime;
   bool _zmqInitialized;
 
+  // Last prediction output (for output emission)
+  PredictionOutput _lastPredictionOutput;
+
   // ZeroMQ
   std::unique_ptr<zmq::context_t> _zmqContext;
   std::unique_ptr<zmq::socket_t> _zmqSocket;
@@ -113,7 +118,8 @@ private:
   std::vector<PredictionHit> predictForInstrument(int idx, Real currentTime);
   Real computeConfidence(int idx);
   Real computeTimeUncertainty(int idx);
-  std::string serializePredictions(const std::vector<std::vector<PredictionHit>>& allPredictions, Real currentTime);
+  PredictionOutput buildPredictionOutput(const std::vector<std::vector<PredictionHit>> &allPredictions, Real currentTime);
+  std::string serializePredictionsForZMQ(const PredictionOutput &output); // For ZeroMQ JSON output
   void publishZeroMQ(const std::string& json);
   
   // Kalman/PLL helpers
@@ -156,16 +162,7 @@ struct InstrumentState {
                        lastHitTime(-1), lastUpdateFrame(-1), hitsSeen(0), confidenceGlobal(0) {}
 };
 
-// Prediction hit structure
-struct PredictionHit {
-  Real tPredSec;
-  Real ciLowSec;
-  Real ciHighSec;
-  Real confidence;
-  int hitIndex;
-  
-  PredictionHit() : tPredSec(0), ciLowSec(0), ciHighSec(0), confidence(0), hitIndex(1) {}
-};
+// PredictionHit is now defined in prediction_types.h
 
 } // namespace streaming
 } // namespace essentia

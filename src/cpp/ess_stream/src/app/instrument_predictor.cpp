@@ -1,5 +1,6 @@
 #include "instrument_predictor.h"
 #include "hit_prediction_logger.h"  // For HitPredictionLogger
+#include "prediction_types.h"
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -18,15 +19,19 @@ const char* InstrumentPredictor::description =
 InstrumentPredictor::InstrumentPredictor() : Algorithm() {
   declareInput(_in, "in", "instrument gate hits (vector of 5)");
   declareOutput(_out, "out", "dummy output (not used)");
+  declareOutput(_predictionOut, "predictions", "prediction JSON output for lighting engine");
   _in.setAcquireSize(1);
   _out.setAcquireSize(1);
+  _predictionOut.setAcquireSize(1);
   _in.setReleaseSize(1);
   _out.setReleaseSize(1);
-  
+  _predictionOut.setReleaseSize(1);
+
   _zmqInitialized = false;
   _frameCount = 0;
   _frameTimeSec = 0.0;
   _lastEmissionTime = 0.0;
+  _lastPredictionOutput = PredictionOutput();
 }
 
 InstrumentPredictor::~InstrumentPredictor() {
@@ -146,12 +151,24 @@ AlgorithmStatus InstrumentPredictor::process() {
   // Check periodic emission or emit on hits
   Real elapsedSinceLastEmit = _frameTimeSec - _lastEmissionTime;
   bool shouldEmit = anyHit || (elapsedSinceLastEmit >= _periodicIntervalSec);
-  
+
+  // Handle prediction output - emit empty PredictionOutput if no predictions this frame
+  std::vector<PredictionOutput> &predictionTokens = _predictionOut.tokens();
+  if (predictionTokens.size() < 1)
+    predictionTokens.resize(1);
+
   if (shouldEmit) {
     generatePredictions(_frameTimeSec, shouldEmit);
     _lastEmissionTime = _frameTimeSec;
+    // Emit the prediction output to the output
+    predictionTokens[0] = _lastPredictionOutput;
   }
-  
+  else
+  {
+    // Emit empty PredictionOutput when not generating predictions
+    predictionTokens[0] = PredictionOutput();
+  }
+
   // Dummy output (not used)
   if (outTokens.size() < 1) outTokens.resize(1);
   outTokens[0].assign(NUM_INSTRUMENTS, 0.0f);
@@ -336,23 +353,28 @@ Real InstrumentPredictor::wrapPhaseResidual(Real residual) {
   return residual;
 }
 
-void InstrumentPredictor::generatePredictions(Real currentTime, bool forceEmit) {
-  if (!_zmqInitialized) return;
-  
+void InstrumentPredictor::generatePredictions(Real currentTime, bool forceEmit)
+{
   std::vector<std::vector<PredictionHit>> allPredictions(NUM_INSTRUMENTS);
   
   for (int i = 0; i < NUM_INSTRUMENTS; ++i) {
     allPredictions[i] = predictForInstrument(i, currentTime);
   }
-  
-  std::string json = serializePredictions(allPredictions, currentTime);
-  
+
+  // Build PredictionOutput struct
+  _lastPredictionOutput = buildPredictionOutput(allPredictions, currentTime);
+
   // Log predictions to file if logger is set
   if (_logger && _logger->is_enabled()) {
     _logger->log_predictions(_frameCount, currentTime, allPredictions);
   }
-  
-  publishZeroMQ(json);
+
+  // Publish via ZeroMQ (if initialized) - convert to JSON for external consumers
+  if (_zmqInitialized)
+  {
+    std::string json = serializePredictionsForZMQ(_lastPredictionOutput);
+    publishZeroMQ(json);
+  }
 }
 
 std::vector<PredictionHit> InstrumentPredictor::predictForInstrument(int idx, Real currentTime) {
@@ -447,41 +469,71 @@ Real InstrumentPredictor::computeTimeUncertainty(int idx) {
   return std::max(0.001f, timeUncertainty); // Minimum 1ms
 }
 
-std::string InstrumentPredictor::serializePredictions(const std::vector<std::vector<PredictionHit>>& allPredictions, Real currentTime) {
-  std::ostringstream oss;
-  oss << std::fixed << std::setprecision(6);
-  
+PredictionOutput InstrumentPredictor::buildPredictionOutput(const std::vector<std::vector<PredictionHit>> &allPredictions, Real currentTime)
+{
+  PredictionOutput output;
+  output.timestampSec = currentTime;
+  output.frameIdx = _frameCount;
+  output.predictions.clear();
+  output.predictions.reserve(NUM_INSTRUMENTS);
+
   static const char* instNames[] = {"kick", "snare", "clap", "chat", "ohc"};
-  
-  oss << "{\"timestamp_sec\":" << currentTime
-      << ",\"frame_idx\":" << _frameCount
-      << ",\"predictions\":[";
-  
+
   for (int i = 0; i < NUM_INSTRUMENTS; ++i) {
     auto& inst = *_instruments[i];
     auto& hits = allPredictions[i];
-    
-    if (i > 0) oss << ",";
-    oss << "{\"instrument\":\"" << instNames[i] << "\""
-        << ",\"tempo_bpm\":" << (inst.period > 1e-6 ? 60.0 / inst.period : 0.0)
-        << ",\"period_sec\":" << inst.period
-        << ",\"phase\":" << inst.phase
-        << ",\"confidence_global\":" << inst.confidenceGlobal
-        << ",\"warmup_complete\":" << (inst.warmupComplete ? "true" : "false")
+
+    InstrumentPrediction pred;
+    pred.instrument = instNames[i];
+    pred.tempoBpm = (inst.period > 1e-6 ? 60.0 / inst.period : 0.0);
+    pred.periodSec = inst.period;
+    pred.phase = inst.phase;
+    pred.confidenceGlobal = inst.confidenceGlobal;
+    pred.warmupComplete = inst.warmupComplete;
+    pred.hits = hits; // Copy hits vector
+
+    output.predictions.push_back(pred);
+  }
+
+  return output;
+}
+
+std::string InstrumentPredictor::serializePredictionsForZMQ(const PredictionOutput &output)
+{
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(6);
+
+  oss << "{\"timestamp_sec\":" << output.timestampSec
+      << ",\"frame_idx\":" << output.frameIdx
+      << ",\"predictions\":[";
+
+  for (size_t i = 0; i < output.predictions.size(); ++i)
+  {
+    const auto &pred = output.predictions[i];
+
+    if (i > 0)
+      oss << ",";
+    oss << "{\"instrument\":\"" << pred.instrument << "\""
+        << ",\"tempo_bpm\":" << pred.tempoBpm
+        << ",\"period_sec\":" << pred.periodSec
+        << ",\"phase\":" << pred.phase
+        << ",\"confidence_global\":" << pred.confidenceGlobal
+        << ",\"warmup_complete\":" << (pred.warmupComplete ? "true" : "false")
         << ",\"hits\":[";
-    
-    for (size_t j = 0; j < hits.size(); ++j) {
+
+    for (size_t j = 0; j < pred.hits.size(); ++j)
+    {
       if (j > 0) oss << ",";
-      oss << "{\"t_pred_sec\":" << hits[j].tPredSec
-          << ",\"ci_low_sec\":" << hits[j].ciLowSec
-          << ",\"ci_high_sec\":" << hits[j].ciHighSec
-          << ",\"confidence\":" << hits[j].confidence
-          << ",\"hit_index\":" << hits[j].hitIndex << "}";
+      oss << "{\"t_pred_sec\":" << pred.hits[j].tPredSec
+          << ",\"ci_low_sec\":" << pred.hits[j].ciLowSec
+          << ",\"ci_high_sec\":" << pred.hits[j].ciHighSec
+          << ",\"confidence\":" << pred.hits[j].confidence
+          << ",\"hit_index\":" << pred.hits[j].hitIndex << "}";
     }
-    
+
     oss << "]}";
   }
-  
+
   oss << "]}";
   return oss.str();
 }

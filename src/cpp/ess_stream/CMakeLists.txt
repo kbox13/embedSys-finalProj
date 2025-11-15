@@ -28,7 +28,21 @@ pkg_check_modules(PORTAUDIO REQUIRED IMPORTED_TARGET portaudio-2.0)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ZMQ REQUIRED IMPORTED_TARGET libzmq)
 
-# Add cppzmq include directory
+# Find Paho MQTT C++ (paho-mqttpp3)
+find_library(PAHO_MQTT_CPP_LIB
+  NAMES paho-mqttpp3
+  PATHS /opt/homebrew/lib /usr/local/lib
+  REQUIRED
+)
+
+# Find Paho MQTT C (libpaho-mqtt) - async client
+find_library(PAHO_MQTT_C_LIB
+  NAMES paho-mqtt3a
+  PATHS /opt/homebrew/lib /usr/local/lib
+  REQUIRED
+)
+
+# Add include directories
 include_directories(/opt/homebrew/include)
 
 # Manually set paths as backup
@@ -49,6 +63,8 @@ add_executable(ess_stream
   src/app/zeromq_publisher.cpp
   src/app/hit_prediction_logger.cpp
   src/app/gate_logger_sink.cpp
+  src/app/lighting_engine.cpp
+  src/app/mqtt_publisher.cpp
 )
 
 target_include_directories(ess_stream PRIVATE
@@ -57,6 +73,7 @@ target_include_directories(ess_stream PRIVATE
   PkgConfig::ZMQ
   ${ESSENTIA_INCLUDE_DIRS}
   ${ESSENTIA_ROOT}/include
+  /opt/homebrew/include
 )
 
 target_link_libraries(ess_stream PRIVATE
@@ -64,12 +81,14 @@ target_link_libraries(ess_stream PRIVATE
   PkgConfig::PORTAUDIO
   PkgConfig::ZMQ
   ${ESSENTIA_LIBRARIES}
+  ${PAHO_MQTT_CPP_LIB}
+  ${PAHO_MQTT_C_LIB}
 )
 
-# Set rpath to find essentia library at runtime
+# Set rpath to find essentia and MQTT libraries at runtime
 set_target_properties(ess_stream PROPERTIES
-  BUILD_RPATH "${ESSENTIA_ROOT}/lib"
-  INSTALL_RPATH "${ESSENTIA_ROOT}/lib"
+  BUILD_RPATH "${ESSENTIA_ROOT}/lib;/opt/homebrew/lib"
+  INSTALL_RPATH "${ESSENTIA_ROOT}/lib;/opt/homebrew/lib"
 )
 
 target_compile_definitions(ess_stream PRIVATE
