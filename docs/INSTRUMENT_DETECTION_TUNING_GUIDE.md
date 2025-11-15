@@ -230,6 +230,137 @@ Algorithm *kick_gate_publisher = F.create("ZeroMQPublisher",
 - **`buffer_size`**: Currently 1 (publish immediately)
   - Can increase for batching if network is bottleneck
 
+## 5. Lighting Engine Parameters
+
+**Location:** `cpp/ess_stream/src/app/streaming_pipe.cpp` lines 391-395
+
+The LightingEngine filters predictions from InstrumentPredictor and maps them to RGB lighting commands.
+
+```cpp
+Algorithm *lighting_engine = F.create("LightingEngine",
+  "confidence_threshold", 0.70,      // Minimum confidence to send
+  "max_latency_sec", 2.0,             // Maximum prediction latency
+  "min_latency_sec", 0.07,            // Minimum prediction latency
+  "duplicate_window_sec", 0.4);       // Time window for duplicate detection
+```
+
+### Parameter Descriptions
+
+1. **`confidence_threshold`** (0.0-1.0): Minimum confidence to send lighting command
+   - **Lower values (0.1-0.5):** More sensitive, sends more events (including low-confidence)
+   - **Higher values (0.6-0.9):** Less sensitive, only sends high-confidence predictions
+   - **Default:** 0.3 (in header), but 0.70 used in pipeline (more conservative)
+   - **Tuning:** 
+     - If missing lighting events, decrease by 0.1-0.2
+     - If too many false triggers, increase by 0.1-0.2
+     - Consider your prediction confidence distribution
+
+2. **`max_latency_sec`** (0.1-10.0): Maximum prediction latency (seconds)
+   - Only sends predictions that are at most this far in the future
+   - **Default:** 2.0 seconds
+   - **Tuning:**
+     - Increase if you want to schedule events further ahead
+     - Decrease if predictions become less accurate at longer horizons
+     - Should match your prediction horizon (currently 2.0 seconds)
+
+3. **`min_latency_sec`** (0.01-1.0): Minimum prediction latency (seconds)
+   - Only sends predictions that are at least this far in the future
+   - Prevents sending events that are too close (not enough time for embedded device)
+   - **Default:** 0.05 seconds (50ms)
+   - **Tuning:**
+     - Increase if embedded device needs more lead time
+     - Decrease if you want to react to very near-term predictions
+     - Should account for MQTT latency + embedded device processing time
+
+4. **`duplicate_window_sec`** (0.01-1.0): Time window for duplicate detection (seconds)
+   - Prevents sending the same event multiple times
+   - Events with same instrument and time (rounded to 10ms) within this window are considered duplicates
+   - **Default:** 0.1 seconds (100ms)
+   - **Tuning:**
+     - Increase if getting duplicate events
+     - Decrease if legitimate rapid-fire events are being filtered
+     - Should be larger than your frame processing time
+
+### Color Mapping
+
+The LightingEngine maps instruments to RGB colors:
+- **Kick** → Red (1, 0, 0)
+- **Snare** → Green (0, 1, 0)
+- **Clap/Chat/OHat** → Blue (0, 0, 1)
+
+To modify colors, edit `mapInstrumentToColor()` in `lighting_engine.cpp`.
+
+## 6. MQTT Publisher Parameters
+
+**Location:** `cpp/ess_stream/src/app/streaming_pipe.cpp` lines 396-402
+
+The MQTTPublisher converts lighting commands to Unix timestamps and publishes to MQTT broker.
+
+```cpp
+Algorithm *mqtt_publisher = F.create("MQTTPublisher",
+  "broker_host", "172.20.10.5",        // MQTT broker hostname/IP
+  "broker_port", 1883,                 // MQTT broker port
+  "topic", "beat/events/schedule",      // MQTT topic
+  "client_id", "essentia_lighting",     // MQTT client ID
+  "batch_size", 1,                     // Unused (immediate publish)
+  "batch_interval_ms", 50);            // Unused (immediate publish)
+```
+
+### Parameter Descriptions
+
+1. **`broker_host`** (string): MQTT broker hostname or IP address
+   - **Default:** "localhost"
+   - **Example:** "172.20.10.5", "192.168.1.100", "mqtt.example.com"
+   - **Tuning:** Set to your MQTT broker's address
+
+2. **`broker_port`** (1-65535): MQTT broker port
+   - **Default:** 1883 (standard MQTT port)
+   - **TLS/SSL:** Use 8883 for secure MQTT
+   - **Tuning:** Match your broker configuration
+
+3. **`topic`** (string): MQTT topic for publishing events
+   - **Default:** "beat/events/schedule"
+   - **Format:** Must match what embedded device subscribes to
+   - **Tuning:** Change if using different topic structure
+
+4. **`client_id`** (string): MQTT client identifier
+   - **Default:** "essentia_lighting"
+   - **Tuning:** Use unique ID if running multiple instances
+   - Should be unique per client on broker
+
+5. **`batch_size`** and **`batch_interval_ms`**: **Unused** (kept for compatibility)
+   - All commands are published immediately upon arrival
+   - No batching delay for lowest latency
+
+### MQTT Message Format
+
+Published messages are JSON with the following structure:
+```json
+{
+  "unix_time": 1234567890,
+  "microseconds": 123456,
+  "confidence": 0.85,
+  "r": 1,
+  "g": 0,
+  "b": 0,
+  "event_id": "kick_123.45"
+}
+```
+
+- **`unix_time`**: Unix timestamp (seconds since epoch)
+- **`microseconds`**: Microsecond component (0-999999)
+- **`confidence`**: Prediction confidence (0.0-1.0)
+- **`r`, `g`, `b`**: RGB color values (0 or 1 in current implementation)
+- **`event_id`**: Unique event identifier (instrument_time)
+
+### Unix Timestamp Conversion
+
+The MQTTPublisher automatically converts prediction times (relative to pipeline start) to Unix timestamps:
+- Captures system time when pipeline starts
+- Adds prediction time offset to get absolute Unix time
+- Handles microsecond precision and overflow correctly
+- No manual time synchronization needed
+
 ## Tuning Workflow
 
 ### Step 1: Verify Mel Band Count
@@ -300,6 +431,9 @@ Algorithm *kick_gate_publisher = F.create("ZeroMQPublisher",
 | Hit Detection (Chat) | `streaming_pipe.cpp` | 259-266 |
 | Hit Detection (OHc) | `streaming_pipe.cpp` | 267-274 |
 | Mel Bands Config | `streaming_pipe.cpp` | 167 (add params) |
+| Lighting Engine Config | `streaming_pipe.cpp` | 391-395 |
+| MQTT Publisher Config | `streaming_pipe.cpp` | 396-402 |
+| Color Mapping | `lighting_engine.cpp` | `mapInstrumentToColor()` function |
 
 ## Example: Tuning for Specific Music Style
 

@@ -72,13 +72,15 @@ My approach to complete this project is broken up logically into the 2 parts. Cr
    - Real-time audio capture and FFT analysis
    - Multiple gate algorithms for percussive detection
    - Instrument classification
-   - ZeroMQ publishing
+   - Kalman filter-based prediction engine (InstrumentPredictor)
+   - Lighting engine with confidence filtering and RGB color mapping
+   - Direct MQTT publishing with Unix timestamp conversion
+   - ZeroMQ publishing for visualization/external tools
 
-2. **Python Prediction & Communication Layer**
+2. **Python Visualization & Testing (Optional)**
    - ZeroMQ subscriber for Essentia events
-   - NTP time synchronization
-   - MQTT event publishing
    - Real-time visualization
+   - MQTT testing utilities
 
 3. **Embedded Device (Arduino Nano ESP32)**
    - Dual-core FreeRTOS architecture
@@ -97,10 +99,11 @@ My approach to complete this project is broken up logically into the 2 parts. Cr
 
 ### Architecture Highlights
 
-- **Separation of Concerns**: C++ for audio processing prediction, Python for communication, C++ for embedded execution
-  - Looking to remove python dependencies all together, used for quick prototyping.
-- **Standard Protocols**: ZeroMQ for inter-process communication, MQTT for device communication, NTP for time sync
+- **Separation of Concerns**: C++ for audio processing, prediction, and MQTT communication; Python optional for visualization
+  - **Production-ready**: Direct C++ MQTT publishing eliminates Python dependency for core functionality
+- **Standard Protocols**: ZeroMQ for visualization/external tools, MQTT for device communication, NTP for time sync
 - **Precise Timing**: Hardware timer interrupts ensure microsecond-level accuracy
+- **Unix Timestamp Conversion**: High-precision conversion from prediction times to Unix timestamps with microsecond accuracy
 - **Scalability**: MQTT pub/sub allows multiple devices
-- **Reliability**: Dual-core isolation, thread-safe operations, error handling 
+- **Reliability**: Dual-core isolation, thread-safe operations, error handling, non-blocking async MQTT publishing 
   

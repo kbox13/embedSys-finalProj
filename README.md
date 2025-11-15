@@ -7,8 +7,8 @@ This is the final project for a graduate level embedded systems course at UCLA. 
 
 The system consists of three main components:
 
-1. **Audio Processing Pipeline (C++)**: Real-time audio analysis using Essentia to detect percussive events
-2. **Prediction & Communication (Python)**: Kalman filter-based prediction engine and MQTT communication
+1. **Audio Processing Pipeline (C++)**: Real-time audio analysis using Essentia to detect percussive events, predict future hits, filter and map to lighting commands, and publish directly to MQTT
+2. **Visualization & Testing (Python, Optional)**: Real-time visualization and testing tools for development and debugging
 3. **Embedded Device (Arduino Nano ESP32)**: Hardware timer-based event scheduler with dual-core architecture
 
 ## System Architecture
@@ -24,9 +24,9 @@ The system consists of three main components:
 │  - FFT-based audio analysis                                 │
 │  - Percussive event detection (gates)                       │
 │  - Instrument classification                                │
-│  - Prediction Engine                                        │
-│  - Lighting Engine                                          │
-│  - MQTT publisher                                           │
+│  - Prediction Engine (InstrumentPredictor)                  │
+│  - Lighting Engine (filters & RGB mapping)                  │
+│  - MQTT Publisher (Unix timestamp conversion)               │
 └───────────────────────┬─────────────────────────────────────┘
                         │ (MQTT)
                         ↓
@@ -53,8 +53,11 @@ Located in `src/cpp/ess_stream/`, this C++ application processes audio in real-t
 - Real-time audio capture and FFT analysis
 - Percussive event detection using multiple gate algorithms
 - Instrument classification (Kick, Snare, Clap, Hi-Hat, Crash)
-- Configurable via YAML files
-- ZeroMQ publishing for Python integration
+- Kalman filter-based prediction engine (~100ms lookahead)
+- Lighting engine with confidence filtering and RGB color mapping
+- Direct MQTT publishing to embedded devices (no Python layer needed)
+- ZeroMQ publishing for external visualization/analysis
+- Configurable via YAML files and algorithm parameters
 
 **Build & Run:**
 ```bash
@@ -65,9 +68,9 @@ make
 
 See `docs/essentia_pipe.md` for detailed pipeline documentation.
 
-### 2. Python Prediction & Visualization
+### 2. Python Visualization & Testing (Optional)
 
-Located in `src/python/`, this component handles prediction, communication, and visualization.
+Located in `src/python/`, this component provides visualization and testing tools. **Note:** The main prediction and MQTT communication is now handled directly in C++.
 
 **Key Scripts:**
 - `zmq_audio_subscriber.py` - Subscribes to Essentia pipeline via ZeroMQ
@@ -76,10 +79,9 @@ Located in `src/python/`, this component handles prediction, communication, and 
 - `beatnet_streaming.py` - BeatNet streaming mode (exploratory, not primary)
 
 **Features:**
-- NTP time synchronization for accurate scheduling
-- MQTT event publishing to embedded devices
 - Real-time visualization using Vispy
 - Event logging and analysis
+- MQTT testing utilities
 
 **Usage:**
 ```bash
@@ -142,6 +144,15 @@ The Essentia library is included as a submodule. Build instructions:
 cd essentia
 # Follow Essentia build instructions
 ```
+
+**MQTT Libraries (macOS):**
+```bash
+# Install Paho MQTT C++ and C libraries
+brew install paho-mqtt-cpp
+brew install paho-mqtt-c
+```
+
+The build system will automatically find these libraries in `/opt/homebrew/lib` (Apple Silicon) or `/usr/local/lib` (Intel).
 
 ### MQTT Broker
 
@@ -227,25 +238,29 @@ finalProj/
 
 ## Communication Protocols
 
-### ZeroMQ (C++ → Python)
+### ZeroMQ (C++ → External Consumers)
 - **Endpoint**: `tcp://*:5555` (gates), `tcp://*:5556` (predictions)
 - **Format**: JSON messages with event timestamps and metadata
+- **Purpose**: Visualization, logging, and external analysis tools
 
-### MQTT (Python → Arduino)
-- **Broker**: Localhost (default: `localhost:1883`)
-- **Topics**:
-  - `beat/events/schedule` - Event scheduling
-  - `beat/time/sync` - Time synchronization
-  - `beat/commands/all` - Commands
+### MQTT (C++ → Arduino)
+- **Broker**: Configurable (default: `localhost:1883`)
+- **Topic**: `beat/events/schedule` (configurable)
 - **Format**: JSON with Unix timestamps and microsecond precision
+- **Client**: Paho MQTT C++ (async client, non-blocking)
+- **Features**:
+  - Automatic Unix timestamp conversion from prediction times
+  - Immediate publishing (no batching delay)
+  - QoS 1 for reliable delivery
 
 ## Timing & Accuracy
 
 - **Event Detection**: Real-time (processing latency ~10-50ms)
-- **Prediction Lookahead**: ~100ms
-- **MQTT Latency**: 10-50ms (network dependent)
+- **Prediction Lookahead**: ~100ms (configurable via LightingEngine parameters)
+- **MQTT Latency**: 10-50ms (network dependent, non-blocking async publish)
 - **Time Sync Accuracy**: ±50ms initial, ±10ms after sync
 - **Event Execution Accuracy**: ±50µs (hardware timer on ESP32)
+- **Unix Timestamp Conversion**: High-precision conversion with microsecond accuracy
 
 ## Development History
 
@@ -256,6 +271,8 @@ finalProj/
 ### Current Implementation
 - **Essentia Pipeline**: FFT-based analysis with custom gate algorithms
 - **Kalman Filter Prediction**: Predicts future events with ~100ms lookahead
+- **Lighting Engine**: Filters predictions by confidence, latency, and duplicates; maps instruments to RGB colors
+- **Direct MQTT Publishing**: C++ MQTT publisher eliminates Python dependency for production use
 - **Hardware Timer**: ESP32 hardware timer for microsecond-precise execution
 - **Dual-Core Architecture**: Separation of communication and execution tasks
 
